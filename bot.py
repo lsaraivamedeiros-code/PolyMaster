@@ -475,9 +475,4 @@ def run_scheduler():
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "--post-now":
-        # Modo de teste: posta imediatamente
-        run_post("🔧 Post manual de teste")
-    else:
-        run_scheduler()
+    run_post("🔧 Post manual de teste")

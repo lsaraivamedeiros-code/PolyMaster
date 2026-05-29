@@ -911,6 +911,51 @@ def next_time(hour):
     return t
 
 
+def bootstrap_records():
+    """
+    Na inicialização, popula records.json com os valores atuais do histórico.
+    Evita posts falsos de recorde ao reiniciar o bot.
+    """
+    records   = load_records()
+    today_str = datetime.now(BRAZIL_TZ).date().isoformat()
+    cands     = fetch_polymarket_data()
+    if not cands:
+        return
+
+    for c in cands[:5]:
+        name = c["candidate"]
+        prob = c["probability"]
+        tid  = c.get("token_id", "")
+        if not tid:
+            continue
+
+        if name == RENAN_NAME:
+            history_all = fetch_price_history(tid)
+            if history_all:
+                max_ever = max(h["price"] for h in history_all)
+                # Se o valor atual já é o máximo histórico, registra sem postar
+                if prob >= max_ever:
+                    cur = records.get("renan_alltime", 0)
+                    if prob > cur:
+                        records["renan_alltime"] = prob
+                        records["renan_alltime_last_post_today"] = {"date": today_str, "prob": prob}
+                        log.info("Bootstrap: renan_alltime = %.1f%%", prob)
+        else:
+            history_march = fetch_price_history(tid, since=MARCH_CUTOFF)
+            if history_march:
+                min_march = min(h["price"] for h in history_march)
+                # Se o valor atual já é a mínima desde março, registra sem postar
+                if prob <= min_march:
+                    key = f"{name}_low"
+                    cur = records.get(key, 999)
+                    if prob < cur:
+                        records[key] = prob
+                        log.info("Bootstrap: %s_low = %.1f%%", name, prob)
+
+    save_records(records)
+    log.info("Bootstrap de recordes concluído.")
+
+
 def run_scheduler():
     log.info("Bot iniciado.")
     schedule = {h: next_time(h) for h, _, _ in SCHEDULED_HOURS}
@@ -920,6 +965,9 @@ def run_scheduler():
         if cands:
             save_weekly({"date": datetime.now(BRAZIL_TZ).date().isoformat(), "candidates": cands})
             log.info("Baseline semanal criado.")
+
+    # Popula records.json na inicialização para evitar falsos positivos
+    bootstrap_records()
 
     for h, _, label in SCHEDULED_HOURS:
         log.info("Próximo %s: %s", label, schedule[h].strftime("%d/%m %H:%M"))

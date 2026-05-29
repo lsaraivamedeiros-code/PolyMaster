@@ -168,7 +168,9 @@ def check_records(candidates):
                 last_today  = records.get("renan_alltime_last_post_today", {})
                 last_prob   = last_today.get("prob", 0) if last_today.get("date") == today_str else 0
                 gap_ok      = round(prob - last_prob, 1) >= 0.5
-                if prob > max_ever and prob > prev_record and gap_ok:
+                # prob > prev_record garante que é genuinamente novo
+                # prob != prev_record evita repost após reinicialização
+                if prob > max_ever and prob > prev_record and gap_ok and round(prob - prev_record, 1) >= 0.5:
                     events.append({"type": "renan_alltime", "candidate": name, "prob": prob, "prev": max_ever})
                     records["renan_alltime"] = prob
                     records["renan_alltime_last_post_today"] = {"date": today_str, "prob": prob}
@@ -180,7 +182,8 @@ def check_records(candidates):
                 max_week      = max(h["price"] for h in history_7d[:-1]) if len(history_7d) > 1 else 0
                 prev_weekly   = records.get("renan_weekly", 0)
                 already_today = records.get("renan_weekly_last_date", "") == today_str
-                if prob > max_week and prob > prev_weekly and not already_today:
+                # prev_weekly já foi postado — só posta se superou em pelo menos 0.5pp
+                if prob > max_week and round(prob - prev_weekly, 1) >= 0.5 and not already_today:
                     events.append({"type": "renan_weekly", "candidate": name, "prob": prob, "prev": max_week})
                     records["renan_weekly"] = prob
                     records["renan_weekly_last_date"] = today_str

@@ -161,10 +161,13 @@ def save_records(r): save_json(RECORDS_FILE, r)
 
 def check_records(candidates):
     """
-    Verifica recordes e retorna lista de eventos.
-    Limites:
-    - renan_alltime: so posta se variacao >= 0.5pp desde o ultimo post de recorde no dia
-    - renan_weekly:  maximo 1 post por dia
+    Verifica recordes usando histórico real do Polymarket:
+    - Renan: máxima de todos os tempos (alltime high)
+    - Demais top 5: mínima desde 01/03/2026
+
+    Controle de repost via records.json:
+    - alltime Renan: exige gap >= 0.5pp desde último post de recorde no dia
+    - baixa outros: só posta uma vez por valor mínimo registrado
     """
     events    = []
     records   = load_records()
@@ -176,56 +179,52 @@ def check_records(candidates):
         tid  = c.get("token_id", "")
         if not tid: continue
 
+        # ── Renan — recorde de alta histórica ─────────────────────────
         if name == RENAN_NAME:
-            # Recorde historico geral — exige 0.5pp de gap desde ultimo post de recorde hoje
+            # Busca histórico completo
             history_all = fetch_price_history(tid)
-            if history_all:
-                max_ever    = max(h["price"] for h in history_all[:-1]) if len(history_all) > 1 else 0
-                prev_record = records.get("renan_alltime", 0)
-                last_today  = records.get("renan_alltime_last_post_today", {})
-                last_prob   = last_today.get("prob", 0) if last_today.get("date") == today_str else 0
-                gap_ok      = round(prob - last_prob, 1) >= 0.5
-                # prob > prev_record garante que é genuinamente novo
-                # prob != prev_record evita repost após reinicialização
-                if prob > max_ever and prob > prev_record and gap_ok and round(prob - prev_record, 1) >= 0.5:
-                    events.append({"type": "renan_alltime", "candidate": name, "prob": prob, "prev": max_ever})
-                    records["renan_alltime"] = prob
-                    records["renan_alltime_last_post_today"] = {"date": today_str, "prob": prob}
+            if not history_all: continue
 
-            # Recorde semanal — maximo 1 por dia
-            since_7d   = datetime.now(BRAZIL_TZ) - timedelta(days=7)
-            history_7d = fetch_price_history(tid, since=since_7d)
-            if history_7d:
-                max_week      = max(h["price"] for h in history_7d[:-1]) if len(history_7d) > 1 else 0
-                prev_weekly   = records.get("renan_weekly", 0)
-                already_today = records.get("renan_weekly_last_date", "") == today_str
-                # prev_weekly já foi postado — só posta se superou em pelo menos 0.5pp
-                if prob > max_week and round(prob - prev_weekly, 1) >= 0.5 and not already_today:
-                    events.append({"type": "renan_weekly", "candidate": name, "prob": prob, "prev": max_week})
-                    records["renan_weekly"] = prob
-                    records["renan_weekly_last_date"] = today_str
+            max_ever = max(h["price"] for h in history_all)
 
-        if name == LULA_NAME:
+            # Só é recorde se prob é o ponto mais alto de toda a série
+            if prob < max_ever:
+                continue
+
+            # Controle de repost: exige 0.5pp acima do último valor registrado
+            prev_alltime    = records.get("renan_alltime", 0)
+            last_today      = records.get("renan_alltime_last_post_today", {})
+            last_prob_today = last_today.get("prob", 0) if last_today.get("date") == today_str else 0
+
+            gap_record = round(prob - prev_alltime, 1)
+            gap_hoje   = round(prob - last_prob_today, 1)
+
+            if gap_record >= 0.5 and gap_hoje >= 0.5:
+                events.append({"type": "renan_alltime", "candidate": name, "prob": prob, "prev": prev_alltime})
+                records["renan_alltime"] = prob
+                records["renan_alltime_last_post_today"] = {"date": today_str, "prob": prob}
+
+        # ── Demais top 5 — mínima desde 01/03/2026 ────────────────────
+        else:
             history_march = fetch_price_history(tid, since=MARCH_CUTOFF)
-            if history_march:
-                min_march = min(h["price"] for h in history_march[:-1]) if len(history_march) > 1 else 999
-                prev_low  = records.get("lula_low", 999)
-                if prob < min_march and prob < prev_low:
-                    events.append({"type": "lula_low", "candidate": name, "prob": prob, "prev": min_march})
-                    records["lula_low"] = prob
+            if not history_march: continue
 
-        if name == FLAVIO_NAME:
-            history_march = fetch_price_history(tid, since=MARCH_CUTOFF)
-            if history_march:
-                min_march = min(h["price"] for h in history_march[:-1]) if len(history_march) > 1 else 999
-                prev_low  = records.get("flavio_low", 999)
-                if prob < min_march and prob < prev_low:
-                    events.append({"type": "flavio_low", "candidate": name, "prob": prob, "prev": min_march})
-                    records["flavio_low"] = prob
+            min_march = min(h["price"] for h in history_march)
+
+            # Só é recorde se prob é o ponto mais baixo desde março
+            if prob > min_march:
+                continue
+
+            # Controle de repost: só posta se valor mínimo mudou
+            key_low  = f"{name}_low"
+            prev_low = records.get(key_low, 999)
+
+            if prob < prev_low:
+                events.append({"type": "low", "candidate": name, "prob": prob, "prev": prev_low})
+                records[key_low] = prob
 
     save_records(records)
     return events
-
 
 def build_chart_lines(top5):
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -558,85 +557,43 @@ def build_alert_tweet(candidates, first_day, last_post, trigger_name, delta_last
 
 
 def build_record_tweet(event, candidates, first_day):
-    name    = event["candidate"]
-    prob    = event["prob"]
-    prev    = event["prev"]
-    etype   = event["type"]
+    name      = event["candidate"]
+    prob      = event["prob"]
+    prev      = event["prev"]
+    etype     = event["type"]
     first_map = {c["candidate"]: c["probability"] for c in (first_day or {}).get("candidates", [])}
     delta_day = round(prob - first_map.get(name, prob), 1)
-
-    c_obj = next((c for c in candidates if c["candidate"] == name), None)
-    idx   = next((i for i, c in enumerate(candidates[:5]) if c["candidate"] == name), 0)
+    idx       = next((i for i, c in enumerate(candidates[:5]) if c["candidate"] == name), 0)
+    sname     = short_name(name)
 
     if etype == "renan_alltime":
         lines = [
-            pick_phrase(),
-            "",
-            "🏆 RECORDE HISTÓRICO — Renan Santos!",
-            "",
-            f"Renan Santos atinge sua maior probabilidade",
-            f"de todos os tempos no Polymarket!",
-            "",
-            f"{MEDAL[idx]} {short_name(name)}: {prob:.1f}% ▲ +{delta_day:.1f}pp no dia",
-            "",
+            pick_phrase(), "",
+            "🏆 RECORDE HISTÓRICO — Renan Santos!", "",
+            "Renan Santos atinge sua maior probabilidade",
+            "de todos os tempos no Polymarket!", "",
+            f"{MEDAL[idx]} Renan Santos: {prob:.1f}%  ▲ +{delta_day:.1f}pp no dia", "",
             f"📈 Nunca esteve tão alto nas apostas!",
-            f"Anterior: {prev:.1f}%",
-            "",
+            f"Anterior máxima: {prev:.1f}%", "",
             "#Eleicoes2026 #Brasil #Polymarket #RecordeRenan",
         ]
-    elif etype == "renan_weekly":
+
+    elif etype == "low":
         lines = [
-            pick_phrase(),
-            "",
-            "⭐ RECORDE SEMANAL — Renan Santos!",
-            "",
-            f"Renan Santos atinge sua maior probabilidade",
-            f"dos últimos 7 dias no Polymarket!",
-            "",
-            f"{MEDAL[idx]} {short_name(name)}: {prob:.1f}% ▲ +{delta_day:.1f}pp no dia",
-            "",
-            f"📈 Máxima dos últimos 7 dias!",
-            f"Anterior (semana): {prev:.1f}%",
-            "",
-            "#Eleicoes2026 #Brasil #Polymarket #RenanEmAlta",
-        ]
-    elif etype == "lula_low":
-        lines = [
-            pick_phrase(),
-            "",
-            "📉 MÍNIMA HISTÓRICA desde 1º de março!",
-            "",
-            f"Lula atinge sua menor probabilidade",
-            f"desde março no Polymarket.",
-            "",
-            f"{MEDAL[idx]} {short_name(name)}: {prob:.1f}% ▼ {delta_day:.1f}pp no dia",
-            "",
-            f"📊 Dado válido a partir de 01/03/2026",
-            f"Anterior (desde março): {prev:.1f}%",
-            "",
+            pick_phrase(), "",
+            f"📉 MÍNIMA HISTÓRICA desde 1º de março!", "",
+            f"{sname} atinge sua menor probabilidade",
+            f"desde março no Polymarket.", "",
+            f"{MEDAL[idx]} {sname}: {prob:.1f}%  ▼ {delta_day:.1f}pp no dia", "",
+            f"📊 Dado a partir de 01/03/2026",
+            f"Anterior mínima (desde março): {prev:.1f}%", "",
             "#Eleicoes2026 #Brasil #Polymarket",
         ]
-    elif etype == "flavio_low":
-        lines = [
-            pick_phrase(),
-            "",
-            "📉 MÍNIMA HISTÓRICA desde 1º de março!",
-            "",
-            f"Flávio Bolsonaro atinge sua menor probabilidade",
-            f"desde março no Polymarket.",
-            "",
-            f"{MEDAL[idx]} {short_name(name)}: {prob:.1f}% ▼ {delta_day:.1f}pp no dia",
-            "",
-            f"📊 Dado válido a partir de 01/03/2026",
-            f"Anterior (desde março): {prev:.1f}%",
-            "",
-            "#Eleicoes2026 #Brasil #Polymarket",
-        ]
+
     else:
         return None
 
     return "\n".join(lines)
-
 
 def build_daily_summary(candidates, first_day):
     now_str   = datetime.now(BRAZIL_TZ).strftime("%d/%m/%Y")

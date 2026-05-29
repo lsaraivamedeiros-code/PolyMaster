@@ -144,11 +144,14 @@ def save_records(r): save_json(RECORDS_FILE, r)
 
 def check_records(candidates):
     """
-    Verifica recordes e retorna lista de eventos:
-    [{"type": "renan_alltime"|"renan_weekly"|"lula_low"|"flavio_low", "candidate": ..., "prob": ...}]
+    Verifica recordes e retorna lista de eventos.
+    Limites:
+    - renan_alltime: so posta se variacao >= 0.5pp desde o ultimo post de recorde no dia
+    - renan_weekly:  maximo 1 post por dia
     """
-    events = []
-    records = load_records()
+    events    = []
+    records   = load_records()
+    today_str = datetime.now(BRAZIL_TZ).date().isoformat()
 
     for c in candidates[:5]:
         name = c["candidate"]
@@ -156,42 +159,46 @@ def check_records(candidates):
         tid  = c.get("token_id", "")
         if not tid: continue
 
-        # ── Renan — recorde de alta histórica ──────────────────
         if name == RENAN_NAME:
+            # Recorde historico geral — exige 0.5pp de gap desde ultimo post de recorde hoje
             history_all = fetch_price_history(tid)
             if history_all:
-                max_ever = max(h["price"] for h in history_all[:-1]) if len(history_all) > 1 else 0
+                max_ever    = max(h["price"] for h in history_all[:-1]) if len(history_all) > 1 else 0
                 prev_record = records.get("renan_alltime", 0)
-                if prob > max_ever and prob > prev_record:
+                last_today  = records.get("renan_alltime_last_post_today", {})
+                last_prob   = last_today.get("prob", 0) if last_today.get("date") == today_str else 0
+                gap_ok      = round(prob - last_prob, 1) >= 0.5
+                if prob > max_ever and prob > prev_record and gap_ok:
                     events.append({"type": "renan_alltime", "candidate": name, "prob": prob, "prev": max_ever})
                     records["renan_alltime"] = prob
+                    records["renan_alltime_last_post_today"] = {"date": today_str, "prob": prob}
 
-            # Recorde semanal
-            since_7d = datetime.now(BRAZIL_TZ) - timedelta(days=7)
+            # Recorde semanal — maximo 1 por dia
+            since_7d   = datetime.now(BRAZIL_TZ) - timedelta(days=7)
             history_7d = fetch_price_history(tid, since=since_7d)
             if history_7d:
-                max_week = max(h["price"] for h in history_7d[:-1]) if len(history_7d) > 1 else 0
-                prev_weekly = records.get("renan_weekly", 0)
-                if prob > max_week and prob > prev_weekly:
+                max_week      = max(h["price"] for h in history_7d[:-1]) if len(history_7d) > 1 else 0
+                prev_weekly   = records.get("renan_weekly", 0)
+                already_today = records.get("renan_weekly_last_date", "") == today_str
+                if prob > max_week and prob > prev_weekly and not already_today:
                     events.append({"type": "renan_weekly", "candidate": name, "prob": prob, "prev": max_week})
                     records["renan_weekly"] = prob
+                    records["renan_weekly_last_date"] = today_str
 
-        # ── Lula — mínima desde 01/03 ──────────────────────────
         if name == LULA_NAME:
             history_march = fetch_price_history(tid, since=MARCH_CUTOFF)
             if history_march:
                 min_march = min(h["price"] for h in history_march[:-1]) if len(history_march) > 1 else 999
-                prev_low = records.get("lula_low", 999)
+                prev_low  = records.get("lula_low", 999)
                 if prob < min_march and prob < prev_low:
                     events.append({"type": "lula_low", "candidate": name, "prob": prob, "prev": min_march})
                     records["lula_low"] = prob
 
-        # ── Flávio — mínima desde 01/03 ────────────────────────
         if name == FLAVIO_NAME:
             history_march = fetch_price_history(tid, since=MARCH_CUTOFF)
             if history_march:
                 min_march = min(h["price"] for h in history_march[:-1]) if len(history_march) > 1 else 999
-                prev_low = records.get("flavio_low", 999)
+                prev_low  = records.get("flavio_low", 999)
                 if prob < min_march and prob < prev_low:
                     events.append({"type": "flavio_low", "candidate": name, "prob": prob, "prev": min_march})
                     records["flavio_low"] = prob
@@ -199,10 +206,6 @@ def check_records(candidates):
     save_records(records)
     return events
 
-
-# ─────────────────────────────────────────────
-# GRÁFICOS
-# ─────────────────────────────────────────────
 
 def build_chart_lines(top5):
     fig, ax = plt.subplots(figsize=(10, 10))

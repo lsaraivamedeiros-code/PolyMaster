@@ -58,6 +58,23 @@ log = logging.getLogger("eleicoes_bot")
 COLORS = ["#5B9BD5", "#4C9BE8", "#E6A817", "#E07B39", "#9B8FEE"]
 MEDAL  = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
 
+# Mapa de nomes curtos para exibição nos posts
+SHORT_NAMES = {
+    "Luiz Inácio Lula da Silva": "Lula",
+    "Flávio Bolsonaro": "Flávio",
+    "Renan Santos": "Renan Santos",
+    "Fernando Haddad": "Haddad",
+    "Romeu Zema": "Zema",
+    "Michelle Bolsonaro": "Michelle",
+    "Jair Bolsonaro": "J. Bolsonaro",
+    "Geraldo Alckmin": "Alckmin",
+    "Ciro Gomes": "Ciro",
+    "Joaquim Barbosa": "J. Barbosa",
+}
+
+def short_name(name):
+    return SHORT_NAMES.get(name, name.split()[0])
+
 # Alterna entre gráfico de linhas e barras para posts agendados
 _chart_toggle = {"use_bars": False}
 
@@ -265,7 +282,7 @@ def build_chart_bars(top5, title_suffix=""):
     fig, ax = plt.subplots(figsize=(10, 6))
     fig.patch.set_facecolor("#0D1117"); ax.set_facecolor("#0D1117")
 
-    names  = [f"{MEDAL[i]} {c['candidate'].split()[0] if c['candidate'] != LULA_NAME else 'Lula'}" for i, c in enumerate(top5)]
+    names  = [f"{MEDAL[i]} {short_name(c['candidate'])}" for i, c in enumerate(top5)]
     probs  = [c["probability"] for c in top5]
     colors = COLORS[:len(top5)]
 
@@ -478,7 +495,7 @@ def candidates_block(candidates, last_map, first_map, highlight_name=None):
         d_day  = round(prob - first_map[name], 1) if name in first_map else None
         use_d  = best_delta(d_last, d_day) if d_last is not None else None
         day_str = f" | dia {'+' if (d_day or 0)>0 else ''}{d_day:.1f}pp" if d_day is not None else ""
-        lines.append(f"{MEDAL[i]} {name[:6]:<6} | {prob:4.1f}% | {format_var(use_d)}{day_str}")
+        lines.append(f"{MEDAL[i]} {short_name(name):<12} | {prob:4.1f}% | {format_var(use_d)}{day_str}")
     return "\n".join(lines)
 
 
@@ -500,7 +517,7 @@ def build_scheduled_tweet(candidates, last_post, label):
     ]
     for i, c in enumerate(candidates[:5]):
         delta = round(c["probability"] - last_map[c["candidate"]], 1) if c["candidate"] in last_map else None
-        lines.append(f"{MEDAL[i]} {c['candidate'][:6]:<6} | {c['probability']:4.1f}% | {format_var(delta)}")
+        lines.append(f"{MEDAL[i]} {short_name(c['candidate']):<12} | {c['probability']:4.1f}% | {format_var(delta)}")
     trend_parts = []
     for c in candidates[:3]:
         tid = c.get("token_id", "")
@@ -529,7 +546,7 @@ def build_alert_tweet(candidates, first_day, last_post, trigger_name, delta_last
         d_d   = round(prob - first_map[name], 1) if name in first_map else None
         use_d = best_delta(d_l, d_d) if d_l is not None else None
         day_str = f" | dia {'+' if (d_d or 0)>0 else ''}{d_d:.1f}pp" if d_d is not None else ""
-        lines.append(f"{MEDAL[i]} {name[:6]:<6} | {prob:4.1f}% | {format_var(use_d)}{day_str}")
+        lines.append(f"{MEDAL[i]} {short_name(name):<12} | {prob:4.1f}% | {format_var(use_d)}{day_str}")
 
     add_renan = (trigger_name == RENAN_NAME and delta_last > 0) or \
                 (trigger_name == FLAVIO_NAME and delta_last < 0)
@@ -560,7 +577,7 @@ def build_record_tweet(event, candidates, first_day):
             f"Renan Santos atinge sua maior probabilidade",
             f"de todos os tempos no Polymarket!",
             "",
-            f"{MEDAL[idx]} Renan Santos: {prob:.1f}% ▲ +{delta_day:.1f}pp no dia",
+            f"{MEDAL[idx]} {short_name(name)}: {prob:.1f}% ▲ +{delta_day:.1f}pp no dia",
             "",
             f"📈 Nunca esteve tão alto nas apostas!",
             f"Anterior: {prev:.1f}%",
@@ -576,7 +593,7 @@ def build_record_tweet(event, candidates, first_day):
             f"Renan Santos atinge sua maior probabilidade",
             f"dos últimos 7 dias no Polymarket!",
             "",
-            f"{MEDAL[idx]} Renan Santos: {prob:.1f}% ▲ +{delta_day:.1f}pp no dia",
+            f"{MEDAL[idx]} {short_name(name)}: {prob:.1f}% ▲ +{delta_day:.1f}pp no dia",
             "",
             f"📈 Máxima dos últimos 7 dias!",
             f"Anterior (semana): {prev:.1f}%",
@@ -592,7 +609,7 @@ def build_record_tweet(event, candidates, first_day):
             f"Lula atinge sua menor probabilidade",
             f"desde março no Polymarket.",
             "",
-            f"{MEDAL[idx]} Lula: {prob:.1f}% ▼ {delta_day:.1f}pp no dia",
+            f"{MEDAL[idx]} {short_name(name)}: {prob:.1f}% ▼ {delta_day:.1f}pp no dia",
             "",
             f"📊 Dado válido a partir de 01/03/2026",
             f"Anterior (desde março): {prev:.1f}%",
@@ -608,7 +625,7 @@ def build_record_tweet(event, candidates, first_day):
             f"Flávio Bolsonaro atinge sua menor probabilidade",
             f"desde março no Polymarket.",
             "",
-            f"{MEDAL[idx]} Flávio Bolsonaro: {prob:.1f}% ▼ {delta_day:.1f}pp no dia",
+            f"{MEDAL[idx]} {short_name(name)}: {prob:.1f}% ▼ {delta_day:.1f}pp no dia",
             "",
             f"📊 Dado válido a partir de 01/03/2026",
             f"Anterior (desde março): {prev:.1f}%",
@@ -630,7 +647,7 @@ def build_daily_summary(candidates, first_day):
              "Como os candidatos fecharam o dia", "nas apostas do Polymarket:", ""]
     for i, c in enumerate(candidates[:5]):
         delta = round(c["probability"] - first_map[c["candidate"]], 1) if c["candidate"] in first_map else None
-        lines.append(f"{MEDAL[i]} {c['candidate'][:6]:<6} | {c['probability']:4.1f}% | {format_var(delta)} no dia")
+        lines.append(f"{MEDAL[i]} {short_name(c['candidate']):<12} | {c['probability']:4.1f}% | {format_var(delta)} no dia")
         if delta and abs(delta) > abs(best_delta_val): best_delta_val = delta; best_name = c["candidate"]
     if best_name:
         dir_str = "avançou" if best_delta_val > 0 else "recuou"
@@ -650,7 +667,7 @@ def build_weekly_summary(candidates, weekly):
              "Como os candidatos variaram", "nos últimos 7 dias no Polymarket:", ""]
     for i, c in enumerate(candidates[:5]):
         delta = round(c["probability"] - w_map[c["candidate"]], 1) if c["candidate"] in w_map else None
-        lines.append(f"{MEDAL[i]} {c['candidate'][:6]:<6} | {c['probability']:4.1f}% | {format_var(delta)} na semana")
+        lines.append(f"{MEDAL[i]} {short_name(c['candidate']):<12} | {c['probability']:4.1f}% | {format_var(delta)} na semana")
         if delta and abs(delta) > abs(best_delta_val): best_delta_val = delta; best_name = c["candidate"]
         if c["candidate"] == LULA_NAME:   prev_lula   = w_map.get(LULA_NAME)
         if c["candidate"] == FLAVIO_NAME: prev_flavio = w_map.get(FLAVIO_NAME)

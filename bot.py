@@ -1296,17 +1296,8 @@ def bootstrap_records():
 
 
 def run_scheduler():
-    log.info("Bot iniciado.")
-    schedule = {h: next_time(h) for h, _, _ in SCHEDULED_HOURS}
-
-    if not load_weekly():
-        cands = fetch_polymarket_data()
-        if cands:
-            save_weekly({"date": datetime.now(BRAZIL_TZ).date().isoformat(), "candidates": cands})
-            log.info("Baseline semanal criado.")
-
-    # Popula records.json na inicialização para evitar falsos positivos
-    bootstrap_records()
+    log.info("Bot iniciado — modo QueroApoiar apenas.")
+    qa_done = {"candidates": None, "parties": None}
 
     for h, _, label in SCHEDULED_HOURS:
         log.info("Próximo %s: %s", label, schedule[h].strftime("%d/%m %H:%M"))
@@ -1318,38 +1309,18 @@ def run_scheduler():
         weekday = now.weekday()
         today   = now.date().isoformat()
 
-        for h, kind, label in SCHEDULED_HOURS:
-            if now >= schedule[h]:
-                if kind == "summary":
-                    run_daily_summary()
-                elif should_skip_fixed_post():
-                    log.info("Post fixo %s pulado — alerta recente < 30min", label)
-                else:
-                    run_scheduled_post(label)
-                schedule[h] = next_time(h)
-
-        # Resumo semanal sexta às 21h
-        if weekday == 4 and now.hour == 21 and now.minute < 5:
-            w = load_weekly()
-            if not w or w.get("date") != today:
-                run_weekly_summary()
-
-        # QueroApoiar candidatos — quarta
+        # QueroApoiar candidatos — quarta às 17h
         if weekday == 2 and qa_done["candidates"] != today:
-            # Se há post Polymarket às 18h, usa 17h; senão 18h
-            qa_hour = 17 if any(h == 18 for h, _, _ in SCHEDULED_HOURS) else 18
-            if now.hour == qa_hour and now.minute < 5:
+            if now.hour == 17 and now.minute < 5:
                 run_qa_candidates_post()
                 qa_done["candidates"] = today
 
-        # QueroApoiar partidos — sexta
+        # QueroApoiar partidos — sexta às 17h
         if weekday == 4 and qa_done["parties"] != today:
-            qa_hour = 17 if any(h == 18 for h, _, _ in SCHEDULED_HOURS) else 18
-            if now.hour == qa_hour and now.minute < 5:
+            if now.hour == 17 and now.minute < 5:
                 run_qa_parties_post()
                 qa_done["parties"] = today
 
-        check_alert()
         time.sleep(300)
 if __name__ == "__main__":
     import sys

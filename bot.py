@@ -329,6 +329,7 @@ def build_candidates_tweet(items):
         f"📊 QueroApoiar — {now_str}",
         "",
         f"🥇 {leader['name']} {pick_leader()}",
+        f"    {leader['valor_str']}",
         "",
     ]
     for i, item in enumerate(top4[1:], 1):
@@ -347,6 +348,7 @@ def build_parties_tweet(items):
         f"📊 QueroApoiar — {now_str}",
         "",
         f"🥇 {leader['name']} {pick_leader()}",
+        f"    {leader['valor_str']}",
         "",
     ]
     for i, item in enumerate(top4[1:], 1):
@@ -444,23 +446,24 @@ def run_qa_parties_post():
 # ─────────────────────────────────────────────
 
 def run_scheduler():
-    log.info("Bot iniciado — posts QueroApoiar: quarta 17h (candidatos) | sexta 17h (partidos)")
+    log.info("Bot iniciado — posts QueroApoiar: diario 11h (partidos) | diario 18h (candidatos)")
     qa_done = {"candidates": None, "parties": None}
 
     while True:
-        now     = datetime.now(BRAZIL_TZ)
-        weekday = now.weekday()
-        today   = now.date().isoformat()
+        now   = datetime.now(BRAZIL_TZ)
+        today = now.date().isoformat()
 
-        if weekday == 2 and now.hour == 17 and now.minute < 5:
-            if qa_done["candidates"] != today:
-                run_qa_candidates_post()
-                qa_done["candidates"] = today
-
-        if weekday == 4 and now.hour == 17 and now.minute < 5:
+        # Partidos — todo dia às 11h
+        if now.hour == 11 and now.minute < 5:
             if qa_done["parties"] != today:
                 run_qa_parties_post()
                 qa_done["parties"] = today
+
+        # Candidatos — todo dia às 18h
+        if now.hour == 18 and now.minute < 5:
+            if qa_done["candidates"] != today:
+                run_qa_candidates_post()
+                qa_done["candidates"] = today
 
         time.sleep(300)
 

@@ -115,51 +115,52 @@ def scrape_queroapoiar_candidates():
         soup = BeautifulSoup(resp.text, "lxml")
 
         candidates = []
-        cards = soup.find_all(["article", "div"], class_=re.compile(r"card|campaign|candidat", re.I))
-        if not cards:
-            cards = soup.select("div[class*='card'], article")
-
+        cards = soup.select(".qa-candidate-card")
         log.info("Cards candidatos encontrados: %d", len(cards))
 
         for card in cards:
             try:
-                name_el = card.select_one("h2, h3, [class*='name'], [class*='nome'], [class*='title']")
+                name_el = card.select_one(".qa-candidate-name")
                 if not name_el:
                     continue
                 name = name_el.get_text(strip=True)
                 if not name or len(name) < 3:
                     continue
 
-                cargo_el = card.select_one("[class*='cargo'], [class*='role'], [class*='position'], [class*='subtitle'], p")
+                # Filtra apenas presidenciáveis
+                cargo_el = card.select_one(".qa-candidate-cargo")
                 cargo = cargo_el.get_text(strip=True).lower() if cargo_el else ""
                 if cargo and "president" not in cargo and "presid" not in cargo:
                     continue
 
-                valor_el = card.select_one("[class*='total'], [class*='value'], [class*='amount'], [class*='arrecad']")
-                valor_str = valor_el.get_text(strip=True) if valor_el else "R$ 0"
+                # Valor arrecadado — pega o primeiro stats-value (total arrecadado)
+                valor_els = card.select(".qa-candidate-stats-value")
+                valor_str = valor_els[0].get_text(strip=True) if valor_els else "R$ 0"
                 valor_num = float(re.sub(r"[^0-9,]", "", valor_str).replace(",", ".") or 0)
 
-                img_el = card.select_one("img")
+                # Foto
+                img_el = card.select_one(".qa-candidate-image img")
                 img_url = ""
                 if img_el:
                     img_url = img_el.get("src") or img_el.get("data-src") or ""
                     if img_url.startswith("/"):
                         img_url = "https://queroapoiar.com.br" + img_url
 
-                apoio_el = card.select_one("[class*='apoiad'], [class*='support'], [class*='backer']")
+                # Apoiadores
+                apoio_el = card.select_one(".qa-candidate-donors")
                 apoio = apoio_el.get_text(strip=True) if apoio_el else ""
 
                 candidates.append({
                     "name": name, "valor": valor_num, "valor_str": valor_str,
                     "img_url": img_url, "cargo": cargo, "apoio": apoio,
                 })
-                log.info("Candidato: %s | %s", name, valor_str)
+                log.info("Candidato: %s | %s | cargo: %s", name, valor_str, cargo)
             except Exception as e:
                 log.warning("Erro card candidato: %s", e)
                 continue
 
         candidates.sort(key=lambda x: x["valor"], reverse=True)
-        log.info("Total candidatos presidenciáveis: %d", len(candidates))
+        log.info("Total presidenciáveis: %d", len(candidates))
         return candidates[:8] if candidates else None
 
     except Exception as e:
@@ -179,33 +180,35 @@ def scrape_queroapoiar_parties():
         soup = BeautifulSoup(resp.text, "lxml")
 
         parties = []
-        cards = soup.find_all(["article", "div"], class_=re.compile(r"card|party|partido", re.I))
+        # Partidos usam mesma estrutura de cards que candidatos
+        cards = soup.select(".qa-candidate-card")
         if not cards:
-            cards = soup.select("div[class*='card'], article")
-
+            # Fallback: tenta classe de partido específica
+            cards = soup.select("[class*='partido'], [class*='party']")
         log.info("Cards partidos encontrados: %d", len(cards))
 
         for card in cards:
             try:
-                name_el = card.select_one("h2, h3, [class*='name'], [class*='nome']")
+                name_el = card.select_one(".qa-candidate-name, .qa-header-partido-name")
                 if not name_el:
                     continue
                 name = name_el.get_text(strip=True)
                 if not name or len(name) < 2:
                     continue
 
-                valor_el = card.select_one("[class*='total'], [class*='value'], [class*='amount'], [class*='arrecad']")
-                valor_str = valor_el.get_text(strip=True) if valor_el else "R$ 0"
+                valor_els = card.select(".qa-candidate-stats-value")
+                valor_str = valor_els[0].get_text(strip=True) if valor_els else "R$ 0"
                 valor_num = float(re.sub(r"[^0-9,]", "", valor_str).replace(",", ".") or 0)
 
-                img_el = card.select_one("img")
+                # Logo do partido
+                img_el = card.select_one(".qa-candidate-image img, img")
                 img_url = ""
                 if img_el:
                     img_url = img_el.get("src") or img_el.get("data-src") or ""
                     if img_url.startswith("/"):
                         img_url = "https://queroapoiar.com.br" + img_url
 
-                apoio_el = card.select_one("[class*='apoiad'], [class*='support'], [class*='backer'], [class*='campaign']")
+                apoio_el = card.select_one(".qa-candidate-donors")
                 apoio = apoio_el.get_text(strip=True) if apoio_el else ""
 
                 parties.append({

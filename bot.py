@@ -104,130 +104,111 @@ def debug_site(url):
 # ─────────────────────────────────────────────
 
 def scrape_queroapoiar_candidates():
-    import re
-    from bs4 import BeautifulSoup
+    """Busca presidenciáveis via API do QueroApoiar."""
     try:
-        resp = requests.get(
-            "https://queroapoiar.com.br/campanhas/2026",
-            headers=QA_HEADERS, timeout=20
-        )
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-
-        candidates = []
-        cards = soup.select(".qa-candidate-card")
-        log.info("Cards candidatos encontrados: %d", len(cards))
-
-        for card in cards:
+        # Tenta endpoint de campanhas 2026
+        for endpoint in [
+            "https://api.queroapoiar.com.br/api/stats/campanhas/exec?ano=2026",
+            "https://api.queroapoiar.com.br/api/stats/candidatos/exec",
+            "https://api.queroapoiar.com.br/api/stats/campanhas/exec",
+        ]:
             try:
-                name_el = card.select_one(".qa-candidate-name")
-                if not name_el:
-                    continue
-                name = name_el.get_text(strip=True)
-                if not name or len(name) < 3:
-                    continue
-
-                # Filtra apenas presidenciáveis
-                cargo_el = card.select_one(".qa-candidate-cargo")
-                cargo = cargo_el.get_text(strip=True).lower() if cargo_el else ""
-                if cargo and "president" not in cargo and "presid" not in cargo:
-                    continue
-
-                # Valor arrecadado — pega o primeiro stats-value (total arrecadado)
-                valor_els = card.select(".qa-candidate-stats-value")
-                valor_str = valor_els[0].get_text(strip=True) if valor_els else "R$ 0"
-                valor_num = float(re.sub(r"[^0-9,]", "", valor_str).replace(",", ".") or 0)
-
-                # Foto
-                img_el = card.select_one(".qa-candidate-image img")
-                img_url = ""
-                if img_el:
-                    img_url = img_el.get("src") or img_el.get("data-src") or ""
-                    if img_url.startswith("/"):
-                        img_url = "https://queroapoiar.com.br" + img_url
-
-                # Apoiadores
-                apoio_el = card.select_one(".qa-candidate-donors")
-                apoio = apoio_el.get_text(strip=True) if apoio_el else ""
-
-                candidates.append({
-                    "name": name, "valor": valor_num, "valor_str": valor_str,
-                    "img_url": img_url, "cargo": cargo, "apoio": apoio,
-                })
-                log.info("Candidato: %s | %s | cargo: %s", name, valor_str, cargo)
+                resp = requests.get(endpoint, headers=QA_HEADERS, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    log.info("API candidatos OK: %s — keys: %s", endpoint, list(data.keys())[:5])
+                    
+                    # Tenta extrair lista de candidatos
+                    items = (data.get("candidatos") or data.get("campanhas") or 
+                             data.get("data") or data.get("results") or [])
+                    
+                    if items:
+                        candidates = []
+                        for item in items:
+                            cargo = str(item.get("cargo", "")).lower()
+                            # Filtra presidenciáveis
+                            if cargo and "president" not in cargo and "presid" not in cargo:
+                                continue
+                            nome = item.get("nome") or item.get("name") or ""
+                            total = float(item.get("total") or item.get("arrecadado") or 0)
+                            apoiadores = item.get("apoiadores") or item.get("donors") or 0
+                            img_url = item.get("foto") or item.get("image") or item.get("avatar") or ""
+                            if img_url and img_url.startswith("/"):
+                                img_url = "https://queroapoiar.com.br" + img_url
+                            candidates.append({
+                                "name": nome,
+                                "valor": total,
+                                "valor_str": f"R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                                "img_url": img_url,
+                                "apoio": f"{apoiadores} apoiadores",
+                            })
+                        if candidates:
+                            candidates.sort(key=lambda x: x["valor"], reverse=True)
+                            log.info("Presidenciáveis: %d", len(candidates))
+                            return candidates[:8]
             except Exception as e:
-                log.warning("Erro card candidato: %s", e)
+                log.warning("Endpoint %s falhou: %s", endpoint, e)
                 continue
 
-        candidates.sort(key=lambda x: x["valor"], reverse=True)
-        log.info("Total presidenciáveis: %d", len(candidates))
-        return candidates[:8] if candidates else None
-
+        log.error("Nenhum endpoint de candidatos funcionou.")
+        return None
     except Exception as e:
         log.exception("Erro scraping candidatos: %s", e)
         return None
 
 
 def scrape_queroapoiar_parties():
-    import re
-    from bs4 import BeautifulSoup
+    """Busca partidos via API do QueroApoiar."""
     try:
-        resp = requests.get(
-            "https://queroapoiar.com.br/partidos",
-            headers=QA_HEADERS, timeout=20
-        )
+        url = "https://api.queroapoiar.com.br/api/stats/partidos/exec"
+        resp = requests.get(url, headers=QA_HEADERS, timeout=15)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
+        data = resp.json()
+
+        raw = data.get("partidos") or data.get("data") or []
+        if not raw:
+            log.error("API partidos sem dados.")
+            return None
 
         parties = []
-        # Partidos usam mesma estrutura de cards que candidatos
-        cards = soup.select(".qa-candidate-card")
-        if not cards:
-            # Fallback: tenta classe de partido específica
-            cards = soup.select("[class*='partido'], [class*='party']")
-        log.info("Cards partidos encontrados: %d", len(cards))
+        for item in raw:
+            nome  = item.get("nome") or item.get("name") or ""
+            total = float(item.get("total") or 0)
+            camp  = item.get("campanhas") or 0
+            apoio = item.get("apoiadores") or 0
 
-        for card in cards:
-            try:
-                name_el = card.select_one(".qa-candidate-name, .qa-header-partido-name")
-                if not name_el:
-                    continue
-                name = name_el.get_text(strip=True)
-                if not name or len(name) < 2:
-                    continue
+            # Logo: mapa de slugs baseado nos arquivos vistos na aba network do site
+            LOGO_MAP = {
+                "Missão": "missao", "Novo": "novo", "PSOL": "psol", "Psol": "psol",
+                "PCdoB": "pcdob", "PT": "pt", "PSD": "psd", "PL": "pl",
+                "Podemos": "podemos", "UP": "up", "PP": "pp",
+                "Solidariedade": "solidariedade", "PSB": "psb", "PCB": "pcb",
+                "Mobiliza": "mobiliza", "PDT": "pdt", "MDB": "mdb", "DC": "dc",
+                "Republicanos": "republicanos", "PSDB": "psdb", "PV": "pv",
+                "Rede": "rede", "Agir": "agir", "PCO": "pco",
+                "União Brasil": "uniao-brasil", "Democrata": "democrata",
+                "Avante": "avante", "PRD": "prd", "Cidadania": "cidadania",
+            }
+            slug = LOGO_MAP.get(nome, nome.lower().replace(" ", "-"))
+            img_url = f"https://queroapoiar.com.br/assets/image/partidos/{slug}.webp"
 
-                valor_els = card.select(".qa-candidate-stats-value")
-                valor_str = valor_els[0].get_text(strip=True) if valor_els else "R$ 0"
-                valor_num = float(re.sub(r"[^0-9,]", "", valor_str).replace(",", ".") or 0)
+            valor_str = f"R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-                # Logo do partido
-                img_el = card.select_one(".qa-candidate-image img, img")
-                img_url = ""
-                if img_el:
-                    img_url = img_el.get("src") or img_el.get("data-src") or ""
-                    if img_url.startswith("/"):
-                        img_url = "https://queroapoiar.com.br" + img_url
-
-                apoio_el = card.select_one(".qa-candidate-donors")
-                apoio = apoio_el.get_text(strip=True) if apoio_el else ""
-
-                parties.append({
-                    "name": name, "valor": valor_num, "valor_str": valor_str,
-                    "img_url": img_url, "apoio": apoio,
-                })
-                log.info("Partido: %s | %s", name, valor_str)
-            except Exception as e:
-                log.warning("Erro card partido: %s", e)
-                continue
+            parties.append({
+                "name": nome,
+                "valor": total,
+                "valor_str": valor_str,
+                "img_url": img_url,
+                "apoio": f"{camp} campanhas • {apoio} apoiadores",
+            })
 
         parties.sort(key=lambda x: x["valor"], reverse=True)
-        log.info("Total partidos: %d", len(parties))
-        return parties[:8] if parties else None
+        log.info("Partidos: %d", len(parties))
+        return parties[:8]
 
     except Exception as e:
         log.exception("Erro scraping partidos: %s", e)
         return None
-
 
 # ─────────────────────────────────────────────
 # IMAGENS

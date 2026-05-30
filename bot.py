@@ -62,7 +62,7 @@ MEDAL  = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
 SHORT_NAMES = {
     "Luiz Inácio Lula da Silva": "Lula",
     "Flávio Bolsonaro": "Flávio",
-    "Renan Santos": "Renan Santos",
+    "Renan Santos": "Renan",
     "Fernando Haddad": "Haddad",
     "Romeu Zema": "Zema",
     "Michelle Bolsonaro": "Michelle",
@@ -73,7 +73,12 @@ SHORT_NAMES = {
 }
 
 def short_name(name):
+    """Nome curto para tabelas — ex: Renan (não Renan Santos)."""
     return SHORT_NAMES.get(name, name.split()[0])
+
+def full_name(name):
+    """Nome completo para frases em destaque — ex: Renan Santos."""
+    return name
 
 # Alterna entre gráfico de linhas e barras para posts agendados
 _chart_toggle = {"use_bars": False}
@@ -904,12 +909,346 @@ SCHEDULED_HOURS = [
     (21, "summary",   "🌙 Resumo do dia"),
 ]
 
+# QueroApoiar: quarta=2 candidatos, sexta=4 partidos (weekday: Mon=0)
+QUEROAPOIAR_SCHEDULE = [
+    (2, 18, "candidates"),  # quarta
+    (4, 18, "parties"),     # sexta
+]
+
 def next_time(hour):
     now = datetime.now(BRAZIL_TZ)
     t = now.replace(hour=hour, minute=0, second=0, microsecond=0)
     if t <= now: t += timedelta(days=1)
     return t
 
+
+
+# ─────────────────────────────────────────────
+# QUEROAPOIAR — scraping + posts semanais
+# ─────────────────────────────────────────────
+
+QA_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+}
+QA_LAST_POST_FILE = DATA_DIR / "qa_last_post.json"
+
+LEADER_PHRASES = [
+    "segue liderando com folga!",
+    "ainda na frente — e não para de crescer.",
+    "mantém a liderança no ranking.",
+    "continua no topo das doações.",
+    "lidera com destaque.",
+    "é o mais apoiado até agora.",
+    "segura o 1º lugar.",
+]
+
+def pick_leader_phrase(): return random.choice(LEADER_PHRASES)
+
+
+def load_qa_last_post(): return load_json(QA_LAST_POST_FILE) or {}
+def save_qa_last_post(d): save_json(QA_LAST_POST_FILE, d)
+
+
+def scrape_queroapoiar_candidates():
+    """Retorna lista de presidenciáveis do QueroApoiar ordenados por arrecadação."""
+    import re
+    try:
+        resp = requests.get(
+            "https://queroapoiar.com.br/campanhas/2026",
+            headers=QA_HEADERS, timeout=20
+        )
+        resp.raise_for_status()
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, "lxml")
+
+        candidates = []
+        # Cada candidato fica em um card — procura pelo padrão do site
+        cards = soup.select("div[class*='card'], article[class*='campaign'], div[class*='campaign']")
+        
+        if not cards:
+            # Tenta seletor mais genérico
+            cards = soup.find_all(["article", "div"], class_=re.compile(r"card|campaign|candidat", re.I))
+
+        for card in cards:
+            try:
+                # Nome
+                name_el = card.select_one("h2, h3, [class*='name'], [class*='nome'], [class*='title']")
+                if not name_el: continue
+                name = name_el.get_text(strip=True)
+                if not name or len(name) < 3: continue
+
+                # Cargo — filtra apenas presidenciáveis
+                cargo_el = card.select_one("[class*='cargo'], [class*='role'], [class*='position'], [class*='subtitle']")
+                cargo = cargo_el.get_text(strip=True).lower() if cargo_el else ""
+                if cargo and "president" not in cargo and "presid" not in cargo:
+                    continue
+
+                # Valor arrecadado
+                valor_el = card.select_one("[class*='total'], [class*='value'], [class*='amount'], [class*='arrecad']")
+                valor_str = valor_el.get_text(strip=True) if valor_el else "R$ 0"
+                valor_num = float(re.sub(r"[^0-9,]", "", valor_str).replace(",", ".") or 0)
+
+                # Foto
+                img_el = card.select_one("img")
+                img_url = img_el.get("src", "") if img_el else ""
+                if img_url and img_url.startswith("/"): 
+                    img_url = "https://queroapoiar.com.br" + img_url
+
+                # Apoiadores
+                apoio_el = card.select_one("[class*='apoiad'], [class*='support'], [class*='backer']")
+                apoio = apoio_el.get_text(strip=True) if apoio_el else ""
+
+                candidates.append({
+                    "name": name, "valor": valor_num, "valor_str": valor_str,
+                    "img_url": img_url, "cargo": cargo, "apoio": apoio,
+                })
+            except Exception:
+                continue
+
+        candidates.sort(key=lambda x: x["valor"], reverse=True)
+        log.info("QueroApoiar candidatos: %d encontrados", len(candidates))
+        return candidates[:8] if candidates else None
+
+    except Exception as e:
+        log.exception("Erro scraping candidatos: %s", e)
+        return None
+
+
+def scrape_queroapoiar_parties():
+    """Retorna lista de partidos do QueroApoiar ordenados por arrecadação."""
+    import re
+    try:
+        resp = requests.get(
+            "https://queroapoiar.com.br/partidos",
+            headers=QA_HEADERS, timeout=20
+        )
+        resp.raise_for_status()
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, "lxml")
+
+        parties = []
+        cards = soup.find_all(["article", "div"], class_=re.compile(r"card|party|partido", re.I))
+
+        for card in cards:
+            try:
+                name_el = card.select_one("h2, h3, [class*='name'], [class*='nome']")
+                if not name_el: continue
+                name = name_el.get_text(strip=True)
+                if not name or len(name) < 2: continue
+
+                valor_el = card.select_one("[class*='total'], [class*='value'], [class*='amount'], [class*='arrecad']")
+                valor_str = valor_el.get_text(strip=True) if valor_el else "R$ 0"
+                valor_num = float(re.sub(r"[^0-9,]", "", valor_str).replace(",", ".") or 0)
+
+                img_el = card.select_one("img")
+                img_url = img_el.get("src", "") if img_el else ""
+                if img_url and img_url.startswith("/"):
+                    img_url = "https://queroapoiar.com.br" + img_url
+
+                apoio_el = card.select_one("[class*='apoiad'], [class*='support'], [class*='backer'], [class*='campaign']")
+                apoio = apoio_el.get_text(strip=True) if apoio_el else ""
+
+                parties.append({
+                    "name": name, "valor": valor_num, "valor_str": valor_str,
+                    "img_url": img_url, "apoio": apoio,
+                })
+            except Exception:
+                continue
+
+        parties.sort(key=lambda x: x["valor"], reverse=True)
+        log.info("QueroApoiar partidos: %d encontrados", len(parties))
+        return parties[:8] if parties else None
+
+    except Exception as e:
+        log.exception("Erro scraping partidos: %s", e)
+        return None
+
+
+def download_image(url, size=(120, 120)):
+    """Baixa imagem de URL e retorna objeto PIL Image redimensionado."""
+    try:
+        from PIL import Image
+        from io import BytesIO
+        resp = requests.get(url, headers=QA_HEADERS, timeout=10)
+        resp.raise_for_status()
+        img = Image.open(BytesIO(resp.content)).convert("RGBA")
+        img = img.resize(size, Image.LANCZOS)
+        return img
+    except Exception as e:
+        log.warning("Erro download imagem %s: %s", url[:50], e)
+        return None
+
+
+def build_qa_chart(items, title, kind="candidates"):
+    """
+    Gera imagem estilo grade de cards 4x2 com foto/logo, nome, valor.
+    kind: 'candidates' ou 'parties'
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+        from PIL import Image
+        import numpy as np
+
+        n = min(8, len(items))
+        cols, rows = 4, 2
+        fig_w, fig_h = 14, 8
+        fig, axes = plt.subplots(rows, cols, figsize=(fig_w, fig_h))
+        fig.patch.set_facecolor("#0D1117")
+        plt.subplots_adjust(hspace=0.15, wspace=0.08, top=0.88, bottom=0.04, left=0.02, right=0.98)
+
+        # Título
+        fig.text(0.5, 0.95, title, ha="center", va="center",
+                 color="white", fontsize=14, fontweight="bold", transform=fig.transFigure)
+        fig.text(0.5, 0.91, f"Fonte: queroapoiar.com.br • {datetime.now(BRAZIL_TZ).strftime('%d/%m/%Y')}",
+                 ha="center", va="center", color="#555", fontsize=9, transform=fig.transFigure)
+
+        for idx in range(rows * cols):
+            row, col = divmod(idx, cols)
+            ax = axes[row][col]
+            ax.set_facecolor("#161B22")
+            ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+            ax.axis("off")
+
+            # Borda do card
+            for spine in ["top","bottom","left","right"]:
+                ax.spines[spine].set_visible(True)
+                ax.spines[spine].set_color("#30363D")
+                ax.spines[spine].set_linewidth(1)
+
+            if idx >= n:
+                continue
+
+            item = items[idx]
+            pos  = idx + 1
+
+            # Número de posição
+            pos_color = "#FFD700" if pos == 1 else ("#C0C0C0" if pos == 2 else ("#CD7F32" if pos == 3 else "#8899A6"))
+            ax.text(0.05, 0.93, f"{pos}º", transform=ax.transAxes,
+                    color=pos_color, fontsize=11, fontweight="bold", va="top")
+
+            # Foto/logo
+            img_pil = download_image(item["img_url"], size=(90,90)) if item.get("img_url") else None
+            if img_pil:
+                img_arr = np.array(img_pil)
+                imagebox = OffsetImage(img_arr, zoom=0.6)
+                ab = AnnotationBbox(imagebox, (0.5, 0.62), frameon=False,
+                                    xycoords="axes fraction", boxcoords="axes fraction")
+                ax.add_artist(ab)
+            else:
+                # Placeholder com inicial
+                ax.text(0.5, 0.62, item["name"][0].upper(), transform=ax.transAxes,
+                        color="#5B9BD5", fontsize=28, fontweight="bold", ha="center", va="center")
+
+            # Nome
+            name_display = item["name"]
+            if len(name_display) > 16: name_display = name_display[:14] + "…"
+            ax.text(0.5, 0.33, name_display, transform=ax.transAxes,
+                    color="white", fontsize=8.5, fontweight="bold", ha="center", va="center")
+
+            # Valor
+            ax.text(0.5, 0.18, item["valor_str"], transform=ax.transAxes,
+                    color="#00BA7C", fontsize=8, ha="center", va="center")
+
+            # Apoiadores
+            if item.get("apoio"):
+                apoio_str = item["apoio"]
+                if len(apoio_str) > 20: apoio_str = apoio_str[:18] + "…"
+                ax.text(0.5, 0.07, apoio_str, transform=ax.transAxes,
+                        color="#8899A6", fontsize=7, ha="center", va="center")
+
+        path = CHARTS_DIR / f"qa_{kind}_{datetime.now(BRAZIL_TZ).strftime('%Y%m%d_%H%M%S')}.png"
+        plt.savefig(path, dpi=140, bbox_inches="tight", facecolor="#0D1117")
+        plt.close()
+        log.info("Chart QueroApoiar salvo: %s", path)
+        return path
+
+    except Exception as e:
+        log.exception("Erro build_qa_chart: %s", e)
+        return None
+
+
+def build_qa_candidates_tweet(items):
+    """Texto do post de candidatos QueroApoiar."""
+    if not items: return None
+    now_str = datetime.now(BRAZIL_TZ).strftime("%d/%m/%Y")
+    top4    = items[:4]
+    leader  = top4[0]
+
+    lines = [
+        f"💰 Ranking de Arrecadação — Presidenciáveis",
+        f"📊 QueroApoiar — {now_str}",
+        "",
+        f"🥇 {leader['name']} {pick_leader_phrase()}",
+        "",
+    ]
+    for i, item in enumerate(top4[1:], 2):
+        medal = MEDAL[i-1]
+        lines.append(f"{medal} {item['name']:<16} | {item['valor_str']}")
+
+    lines += ["", "🔗 queroapoiar.com.br", "#Eleicoes2026 #Brasil #QueroApoiar"]
+    return "\n".join(lines)
+
+
+def build_qa_parties_tweet(items):
+    """Texto do post de partidos QueroApoiar."""
+    if not items: return None
+    now_str = datetime.now(BRAZIL_TZ).strftime("%d/%m/%Y")
+    top4    = items[:4]
+    leader  = top4[0]
+
+    lines = [
+        f"🏛️ Ranking de Arrecadação — Partidos",
+        f"📊 QueroApoiar — {now_str}",
+        "",
+        f"🥇 {leader['name']} {pick_leader_phrase()}",
+        "",
+    ]
+    for i, item in enumerate(top4[1:], 2):
+        medal = MEDAL[i-1]
+        lines.append(f"{medal} {item['name']:<16} | {item['valor_str']}")
+
+    lines += ["", "🔗 queroapoiar.com.br", "#Eleicoes2026 #Brasil #QueroApoiar"]
+    return "\n".join(lines)
+
+
+def run_qa_candidates_post():
+    """Posta ranking de candidatos presidenciáveis do QueroApoiar."""
+    log.info("QueroApoiar — post candidatos")
+    items = scrape_queroapoiar_candidates()
+    if not items:
+        log.error("Sem dados de candidatos QueroApoiar.")
+        return
+    text  = build_qa_candidates_tweet(items)
+    chart = build_qa_chart(items, "Ranking Presidenciáveis — QueroApoiar", kind="candidates")
+    tid   = post_tweet(text, chart)
+    if tid:
+        save_qa_last_post({**load_qa_last_post(), "candidates": {
+            "tweet_id": tid,
+            "date": datetime.now(BRAZIL_TZ).date().isoformat(),
+        }})
+        log.info("Post candidatos QueroApoiar OK: %s", tid)
+
+
+def run_qa_parties_post():
+    """Posta ranking de partidos do QueroApoiar."""
+    log.info("QueroApoiar — post partidos")
+    items = scrape_queroapoiar_parties()
+    if not items:
+        log.error("Sem dados de partidos QueroApoiar.")
+        return
+    text  = build_qa_parties_tweet(items)
+    chart = build_qa_chart(items, "Ranking Partidos — QueroApoiar", kind="parties")
+    tid   = post_tweet(text, chart)
+    if tid:
+        save_qa_last_post({**load_qa_last_post(), "parties": {
+            "tweet_id": tid,
+            "date": datetime.now(BRAZIL_TZ).date().isoformat(),
+        }})
+        log.info("Post partidos QueroApoiar OK: %s", tid)
 
 def bootstrap_records():
     """
@@ -972,8 +1311,13 @@ def run_scheduler():
     for h, _, label in SCHEDULED_HOURS:
         log.info("Próximo %s: %s", label, schedule[h].strftime("%d/%m %H:%M"))
 
+    qa_done = {"candidates": None, "parties": None}
+
     while True:
-        now = datetime.now(BRAZIL_TZ)
+        now     = datetime.now(BRAZIL_TZ)
+        weekday = now.weekday()
+        today   = now.date().isoformat()
+
         for h, kind, label in SCHEDULED_HOURS:
             if now >= schedule[h]:
                 if kind == "summary":
@@ -985,15 +1329,28 @@ def run_scheduler():
                 schedule[h] = next_time(h)
 
         # Resumo semanal sexta às 21h
-        if now.weekday() == 4 and now.hour == 21 and now.minute < 5:
+        if weekday == 4 and now.hour == 21 and now.minute < 5:
             w = load_weekly()
-            if not w or w.get("date") != now.date().isoformat():
+            if not w or w.get("date") != today:
                 run_weekly_summary()
+
+        # QueroApoiar candidatos — quarta
+        if weekday == 2 and qa_done["candidates"] != today:
+            # Se há post Polymarket às 18h, usa 17h; senão 18h
+            qa_hour = 17 if any(h == 18 for h, _, _ in SCHEDULED_HOURS) else 18
+            if now.hour == qa_hour and now.minute < 5:
+                run_qa_candidates_post()
+                qa_done["candidates"] = today
+
+        # QueroApoiar partidos — sexta
+        if weekday == 4 and qa_done["parties"] != today:
+            qa_hour = 17 if any(h == 18 for h, _, _ in SCHEDULED_HOURS) else 18
+            if now.hour == qa_hour and now.minute < 5:
+                run_qa_parties_post()
+                qa_done["parties"] = today
 
         check_alert()
         time.sleep(300)
-
-
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "--test":

@@ -190,7 +190,7 @@ def scrape_queroapoiar_parties():
                 "Avante": "avante", "PRD": "prd", "Cidadania": "cidadania",
             }
             slug = LOGO_MAP.get(nome, nome.lower().replace(" ", "-"))
-            img_url = f"https://queroapoiar.com.br/assets/image/partidos/{slug}.webp"
+            img_url = f"https://queroapoiar.com.br/assets/partidos/{slug}.webp"
 
             valor_str = f"R$ {total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 

@@ -462,6 +462,22 @@ def run_scheduler():
 
 if __name__ == "__main__":
     import sys
+    elif len(sys.argv) > 1 and sys.argv[1] == "--debug":
+        import requests
+        from bs4 import BeautifulSoup
+        resp = requests.get("https://queroapoiar.com.br/partidos", headers=QA_HEADERS, timeout=20)
+        soup = BeautifulSoup(resp.text, "lxml")
+        # Mostra todas as classes únicas encontradas
+        tags = soup.find_all(True)
+        classes = set()
+        for tag in tags:
+            for c in tag.get("class", []):
+                classes.add(c)
+        print("CLASSES ENCONTRADAS:")
+        for c in sorted(classes)[:80]:
+            print(c)
+        print("\nHTML (primeiros 3000 chars):")
+        print(resp.text[:3000])
     if len(sys.argv) > 1 and sys.argv[1] == "--test-candidates":
         run_qa_candidates_post()
     elif len(sys.argv) > 1 and sys.argv[1] == "--test-parties":

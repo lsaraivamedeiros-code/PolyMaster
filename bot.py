@@ -68,7 +68,8 @@ log = logging.getLogger("qa_bot")
 def load_json(path):
     try:
         return json.load(open(path, encoding="utf-8")) if path.exists() else None
-    except: return None
+    except:
+        return None
 
 def save_json(path, data):
     json.dump(data, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
@@ -78,11 +79,31 @@ def save_qa_last_post(d): save_json(QA_LAST_POST_FILE, d)
 
 
 # ─────────────────────────────────────────────
+# DEBUG — inspeciona HTML do site
+# ─────────────────────────────────────────────
+
+def debug_site(url):
+    from bs4 import BeautifulSoup
+    resp = requests.get(url, headers=QA_HEADERS, timeout=20)
+    print(f"Status: {resp.status_code}")
+    soup = BeautifulSoup(resp.text, "lxml")
+    tags = soup.find_all(True)
+    classes = set()
+    for tag in tags:
+        for c in tag.get("class", []):
+            classes.add(c)
+    print("\nCLASSES ENCONTRADAS:")
+    for c in sorted(classes)[:100]:
+        print(" ", c)
+    print("\nHTML (primeiros 4000 chars):")
+    print(resp.text[:4000])
+
+
+# ─────────────────────────────────────────────
 # SCRAPING
 # ─────────────────────────────────────────────
 
 def scrape_queroapoiar_candidates():
-    """Scraping de presidenciáveis do QueroApoiar."""
     import re
     from bs4 import BeautifulSoup
     try:
@@ -98,12 +119,16 @@ def scrape_queroapoiar_candidates():
         if not cards:
             cards = soup.select("div[class*='card'], article")
 
+        log.info("Cards candidatos encontrados: %d", len(cards))
+
         for card in cards:
             try:
                 name_el = card.select_one("h2, h3, [class*='name'], [class*='nome'], [class*='title']")
-                if not name_el: continue
+                if not name_el:
+                    continue
                 name = name_el.get_text(strip=True)
-                if not name or len(name) < 3: continue
+                if not name or len(name) < 3:
+                    continue
 
                 cargo_el = card.select_one("[class*='cargo'], [class*='role'], [class*='position'], [class*='subtitle'], p")
                 cargo = cargo_el.get_text(strip=True).lower() if cargo_el else ""
@@ -128,11 +153,13 @@ def scrape_queroapoiar_candidates():
                     "name": name, "valor": valor_num, "valor_str": valor_str,
                     "img_url": img_url, "cargo": cargo, "apoio": apoio,
                 })
-            except Exception:
+                log.info("Candidato: %s | %s", name, valor_str)
+            except Exception as e:
+                log.warning("Erro card candidato: %s", e)
                 continue
 
         candidates.sort(key=lambda x: x["valor"], reverse=True)
-        log.info("Candidatos encontrados: %d", len(candidates))
+        log.info("Total candidatos presidenciáveis: %d", len(candidates))
         return candidates[:8] if candidates else None
 
     except Exception as e:
@@ -141,7 +168,6 @@ def scrape_queroapoiar_candidates():
 
 
 def scrape_queroapoiar_parties():
-    """Scraping de partidos do QueroApoiar."""
     import re
     from bs4 import BeautifulSoup
     try:
@@ -157,12 +183,16 @@ def scrape_queroapoiar_parties():
         if not cards:
             cards = soup.select("div[class*='card'], article")
 
+        log.info("Cards partidos encontrados: %d", len(cards))
+
         for card in cards:
             try:
                 name_el = card.select_one("h2, h3, [class*='name'], [class*='nome']")
-                if not name_el: continue
+                if not name_el:
+                    continue
                 name = name_el.get_text(strip=True)
-                if not name or len(name) < 2: continue
+                if not name or len(name) < 2:
+                    continue
 
                 valor_el = card.select_one("[class*='total'], [class*='value'], [class*='amount'], [class*='arrecad']")
                 valor_str = valor_el.get_text(strip=True) if valor_el else "R$ 0"
@@ -182,11 +212,13 @@ def scrape_queroapoiar_parties():
                     "name": name, "valor": valor_num, "valor_str": valor_str,
                     "img_url": img_url, "apoio": apoio,
                 })
-            except Exception:
+                log.info("Partido: %s | %s", name, valor_str)
+            except Exception as e:
+                log.warning("Erro card partido: %s", e)
                 continue
 
         parties.sort(key=lambda x: x["valor"], reverse=True)
-        log.info("Partidos encontrados: %d", len(parties))
+        log.info("Total partidos: %d", len(parties))
         return parties[:8] if parties else None
 
     except Exception as e:
@@ -199,7 +231,6 @@ def scrape_queroapoiar_parties():
 # ─────────────────────────────────────────────
 
 def download_image(url, size=(100, 100)):
-    """Baixa imagem de URL e retorna array numpy."""
     try:
         from PIL import Image
         from io import BytesIO
@@ -214,7 +245,6 @@ def download_image(url, size=(100, 100)):
 
 
 def build_qa_chart(items, title, kind="candidates"):
-    """Grade 4x2 com foto/logo, nome, valor arrecadado e apoiadores."""
     try:
         from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
@@ -233,10 +263,10 @@ def build_qa_chart(items, title, kind="candidates"):
             row, col = divmod(idx, 4)
             ax = axes[row][col]
             ax.set_facecolor("#161B22")
-            ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
             ax.axis("off")
 
-            # Borda do card
             rect = mpatches.FancyBboxPatch(
                 (0.03, 0.03), 0.94, 0.94,
                 boxstyle="round,pad=0.02", linewidth=1.2,
@@ -250,13 +280,10 @@ def build_qa_chart(items, title, kind="candidates"):
 
             item = items[idx]
             pos  = idx + 1
-
-            # Número de posição
             pos_color = "#FFD700" if pos == 1 else ("#C0C0C0" if pos == 2 else ("#CD7F32" if pos == 3 else "#8899A6"))
             ax.text(0.08, 0.91, f"{pos}º", transform=ax.transAxes,
                     color=pos_color, fontsize=11, fontweight="bold", va="top", ha="left")
 
-            # Foto ou logo
             img_arr = download_image(item["img_url"]) if item.get("img_url") else None
             if img_arr is not None:
                 imagebox = OffsetImage(img_arr, zoom=0.55)
@@ -264,7 +291,6 @@ def build_qa_chart(items, title, kind="candidates"):
                                     frameon=False, xycoords="axes fraction")
                 ax.add_artist(ab)
             else:
-                # Placeholder com inicial
                 circle = plt.Circle((0.5, 0.60), 0.20, color="#2D3741",
                                     transform=ax.transAxes, zorder=2)
                 ax.add_patch(circle)
@@ -272,22 +298,21 @@ def build_qa_chart(items, title, kind="candidates"):
                         color="#8899A6", fontsize=20, fontweight="bold",
                         ha="center", va="center", zorder=3)
 
-            # Nome
             name_display = item["name"]
-            if len(name_display) > 15: name_display = name_display[:13] + "…"
+            if len(name_display) > 15:
+                name_display = name_display[:13] + "…"
             ax.text(0.5, 0.32, name_display, transform=ax.transAxes,
                     color="white", fontsize=9, fontweight="bold",
                     ha="center", va="center")
 
-            # Valor arrecadado
             ax.text(0.5, 0.19, item["valor_str"], transform=ax.transAxes,
                     color="#00BA7C", fontsize=8.5, fontweight="bold",
                     ha="center", va="center")
 
-            # Apoiadores
             if item.get("apoio"):
                 apoio_str = item["apoio"]
-                if len(apoio_str) > 24: apoio_str = apoio_str[:22] + "…"
+                if len(apoio_str) > 24:
+                    apoio_str = apoio_str[:22] + "…"
                 ax.text(0.5, 0.08, apoio_str, transform=ax.transAxes,
                         color="#8899A6", fontsize=7,
                         ha="center", va="center")
@@ -378,7 +403,8 @@ def post_tweet(text, chart_path=None, retries=5, retry_delay=240):
                     log.warning("Erro mídia: %s", e)
 
             kwargs = {"text": text}
-            if media_id: kwargs["media_ids"] = [media_id]
+            if media_id:
+                kwargs["media_ids"] = [media_id]
             resp = get_client().create_tweet(**kwargs)
             tid  = resp.data["id"]
             log.info("Tweet postado! ID: %s", tid)
@@ -386,7 +412,8 @@ def post_tweet(text, chart_path=None, retries=5, retry_delay=240):
 
         except Exception as e:
             log.warning("Tentativa %d/%d falhou: %s", attempt, retries, e)
-            if attempt < retries: time.sleep(retry_delay)
+            if attempt < retries:
+                time.sleep(retry_delay)
 
     log.error("Todas as tentativas falharam.")
     return None
@@ -438,16 +465,14 @@ def run_scheduler():
 
     while True:
         now     = datetime.now(BRAZIL_TZ)
-        weekday = now.weekday()  # 0=seg … 4=sex
+        weekday = now.weekday()
         today   = now.date().isoformat()
 
-        # Quarta às 17h — candidatos presidenciáveis
         if weekday == 2 and now.hour == 17 and now.minute < 5:
             if qa_done["candidates"] != today:
                 run_qa_candidates_post()
                 qa_done["candidates"] = today
 
-        # Sexta às 17h — partidos
         if weekday == 4 and now.hour == 17 and now.minute < 5:
             if qa_done["parties"] != today:
                 run_qa_parties_post()
@@ -462,23 +487,11 @@ def run_scheduler():
 
 if __name__ == "__main__":
     import sys
-    elif len(sys.argv) > 1 and sys.argv[1] == "--debug":
-        import requests
-        from bs4 import BeautifulSoup
-        resp = requests.get("https://queroapoiar.com.br/partidos", headers=QA_HEADERS, timeout=20)
-        soup = BeautifulSoup(resp.text, "lxml")
-        # Mostra todas as classes únicas encontradas
-        tags = soup.find_all(True)
-        classes = set()
-        for tag in tags:
-            for c in tag.get("class", []):
-                classes.add(c)
-        print("CLASSES ENCONTRADAS:")
-        for c in sorted(classes)[:80]:
-            print(c)
-        print("\nHTML (primeiros 3000 chars):")
-        print(resp.text[:3000])
-    if len(sys.argv) > 1 and sys.argv[1] == "--test-candidates":
+    if len(sys.argv) > 1 and sys.argv[1] == "--debug-parties":
+        debug_site("https://queroapoiar.com.br/partidos")
+    elif len(sys.argv) > 1 and sys.argv[1] == "--debug-candidates":
+        debug_site("https://queroapoiar.com.br/campanhas/2026")
+    elif len(sys.argv) > 1 and sys.argv[1] == "--test-candidates":
         run_qa_candidates_post()
     elif len(sys.argv) > 1 and sys.argv[1] == "--test-parties":
         run_qa_parties_post()

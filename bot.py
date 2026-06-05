@@ -445,6 +445,316 @@ def run_qa_parties_post():
 # SCHEDULER
 # ─────────────────────────────────────────────
 
+# ─────────────────────────────────────────────
+# MARCOS E ULTRAPASSAGENS
+# ─────────────────────────────────────────────
+
+MILESTONES_FILE   = DATA_DIR / "milestones.json"
+LAST_ALERT_FILE   = DATA_DIR / "last_alert.json"
+RANKING_FILE      = DATA_DIR / "last_ranking.json"
+REPOST_QUEUE_FILE = DATA_DIR / "repost_queue.json"
+
+MARCOS_ARRECADACAO_PARTIDO = [
+    50_000, 100_000, 150_000, 200_000, 250_000, 300_000, 350_000, 400_000,
+    450_000, 500_000, 600_000, 700_000, 750_000, 800_000, 900_000,
+    1_000_000, 1_250_000, 1_500_000, 1_750_000, 2_000_000, 2_500_000,
+    3_000_000, 4_000_000, 5_000_000, 7_500_000, 10_000_000,
+]
+
+MARCOS_ARRECADACAO_CANDIDATO = [
+    25_000, 50_000, 75_000, 100_000, 150_000, 200_000, 250_000, 300_000,
+    350_000, 400_000, 450_000, 500_000, 600_000, 700_000, 750_000,
+    800_000, 900_000, 1_000_000, 1_250_000, 1_500_000, 2_000_000,
+    2_500_000, 3_000_000, 5_000_000,
+]
+
+MARCOS_APOIADORES_PARTIDO = [
+    500, 1_000, 1_500, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000,
+    9_000, 10_000, 12_000, 15_000, 20_000, 25_000, 30_000, 40_000, 50_000,
+]
+
+MARCOS_APOIADORES_CANDIDATO = [
+    250, 500, 750, 1_000, 1_500, 2_000, 2_500, 3_000, 4_000, 5_000,
+    6_000, 7_000, 8_000, 10_000, 12_000, 15_000, 20_000, 25_000,
+]
+
+MISSAO_PARTIDO   = "Missão"
+MISSAO_CANDIDATO = "Renan Santos"
+MIN_ALERT_SECS   = 3 * 3600
+
+
+def fmt_valor(v):
+    s = f"{v:,.2f}"
+    return "R$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+def fmt_marco(v):
+    if v >= 1_000_000:
+        n = v / 1_000_000
+        s = f"{n:.1f}".replace(".", ",")
+        return f"R$ {s} milhao" if n != int(n) else f"R$ {int(n)} milhao"
+    if v >= 1_000:
+        return f"R$ {int(v/1_000)} mil"
+    return fmt_valor(v)
+
+def fmt_apoio_marco(v):
+    if v >= 1_000:
+        return f"{int(v/1_000)} mil apoiadores"
+    return f"{v} apoiadores"
+
+
+def load_milestones():    return load_json(MILESTONES_FILE) or {}
+def save_milestones(d):   save_json(MILESTONES_FILE, d)
+def load_last_alert():    return load_json(LAST_ALERT_FILE) or {}
+def save_last_alert(d):   save_json(LAST_ALERT_FILE, d)
+def load_qa_ranking():    return load_json(RANKING_FILE) or {}
+def save_qa_ranking(d):   save_json(RANKING_FILE, d)
+def load_repost_queue():  return load_json(REPOST_QUEUE_FILE) or []
+def save_repost_queue(d): save_json(REPOST_QUEUE_FILE, d)
+
+
+def can_post_alert():
+    last = load_last_alert()
+    if not last.get("timestamp"):
+        return True
+    elapsed = (datetime.now(BRAZIL_TZ) - datetime.fromisoformat(last["timestamp"])).total_seconds()
+    return elapsed >= MIN_ALERT_SECS
+
+
+def register_alert(text):
+    now = datetime.now(BRAZIL_TZ)
+    save_last_alert({"timestamp": now.isoformat()})
+    if 0 <= now.hour < 6:
+        queue = load_repost_queue()
+        queue.append({"text": text, "queued_at": now.isoformat(), "reposted": False})
+        save_repost_queue(queue)
+        log.info("Post enfileirado para repost matinal.")
+
+
+MARCO_PHRASES = [
+    "acaba de ultrapassar",
+    "acabou de cruzar a marca de",
+    "superou a barreira de",
+    "atingiu o marco de",
+    "chegou em",
+]
+APOIO_PHRASES = ["conquistou seu", "chegou a", "atingiu a marca de", "alcancou"]
+OVER_PHRASES  = ["ultrapassou", "passou a frente de", "superou", "ficou a frente de"]
+
+
+def build_marco_arrecad(name, valor, marco, kind="partido"):
+    emoji = "ROCKET" if kind == "partido" else "STAR"
+    emj   = chr(0x1F680) if kind == "partido" else chr(0x2B50)
+    tag   = name.replace(" ", "")
+    ph    = random.choice(MARCO_PHRASES)
+    lines = [
+        f"{emj} MARCO HISTORICO — {name}!",
+        "",
+        f"{name} {ph}",
+        f"{fmt_marco(marco)} em arrecadacao no QueroApoiar!",
+        "",
+        f"💰 Total arrecadado: {fmt_valor(valor)}",
+        "",
+        "Apoie tambem: queroapoiar.com.br",
+        f"#Eleicoes2026 #{tag} #QueroApoiar",
+    ]
+    return "\n".join(lines)
+
+
+def build_marco_apoio(name, apoiadores, marco, kind="partido"):
+    emj   = "🎉" if kind == "partido" else "⭐"
+    tag   = name.replace(" ", "")
+    ph    = random.choice(APOIO_PHRASES)
+    num   = f"{marco:,}".replace(",", ".")
+    lines = [
+        f"{emj} MARCO DE APOIADORES — {name}!",
+        "",
+        f"{name} {ph}",
+        f"{num} apoiadores no QueroApoiar!",
+        "",
+        f"👥 Apoiadores: {apoiadores:,}".replace(",", "."),
+        "",
+        "Apoie tambem: queroapoiar.com.br",
+        f"#Eleicoes2026 #{tag} #QueroApoiar",
+    ]
+    return "\n".join(lines)
+
+
+def build_overtake(winner, loser, wval, lval, wpos, lpos, kind="partido"):
+    header = "📊 MUDANCA NO RANKING DE PARTIDOS!" if kind == "partido" else "🔄 VIRADA NO RANKING DE PRESIDENCIAVEIS!"
+    ph     = random.choice(OVER_PHRASES)
+    mw     = MEDAL[wpos-1] if wpos <= 8 else f"{wpos}o"
+    ml     = MEDAL[lpos-1] if lpos <= 8 else f"{lpos}o"
+    lines  = [
+        header, "",
+        f"{winner} {ph} {loser}",
+        "no ranking do QueroApoiar!", "",
+        f"{mw} {winner:<16} | {fmt_valor(wval)} ▲",
+        f"{ml} {loser:<16} | {fmt_valor(lval)} ▼",
+        "",
+        "🔗 queroapoiar.com.br",
+        "#Eleicoes2026 #Brasil #QueroApoiar",
+    ]
+    return "\n".join(lines)
+
+
+def build_repost(original):
+    return "🌅 Bom dia! Caso tenha perdido:\n\n" + original
+
+
+def parse_apoiadores(apoio_str):
+    import re
+    nums = re.findall(r"[0-9]+", apoio_str.replace(".", ""))
+    return int(nums[-1]) if nums else 0
+
+
+def check_marcos_and_overtakes():
+    if not can_post_alert():
+        log.info("Aguardando 3h entre alertas.")
+        return
+
+    milestones = load_milestones()
+    posted     = False
+
+    parties    = scrape_queroapoiar_parties()
+    candidates = scrape_queroapoiar_candidates()
+
+    # ── Marcos Missão partido ───────────────────────────────────
+    if parties and not posted:
+        mp = next((p for p in parties if p["name"] == MISSAO_PARTIDO), None)
+        if mp:
+            val   = mp["valor"]
+            apoio = parse_apoiadores(mp.get("apoio", "0"))
+
+            key = "missao_p_arrecad"
+            last_m = milestones.get(key, 0)
+            next_m = next((m for m in MARCOS_ARRECADACAO_PARTIDO if m > last_m and val >= m), None)
+            if next_m:
+                text = build_marco_arrecad(MISSAO_PARTIDO, val, next_m, "partido")
+                tid  = post_tweet(text)
+                if tid:
+                    milestones[key] = next_m
+                    save_milestones(milestones)
+                    register_alert(text)
+                    log.info("Marco arrecadacao Missao partido: %s", fmt_marco(next_m))
+                    posted = True
+
+            if not posted and apoio > 0:
+                key2   = "missao_p_apoio"
+                last_a = milestones.get(key2, 0)
+                next_a = next((m for m in MARCOS_APOIADORES_PARTIDO if m > last_a and apoio >= m), None)
+                if next_a:
+                    text = build_marco_apoio(MISSAO_PARTIDO, apoio, next_a, "partido")
+                    tid  = post_tweet(text)
+                    if tid:
+                        milestones[key2] = next_a
+                        save_milestones(milestones)
+                        register_alert(text)
+                        log.info("Marco apoiadores Missao partido: %d", next_a)
+                        posted = True
+
+    # ── Marcos Renan Santos ─────────────────────────────────────
+    if candidates and not posted:
+        rc = next((c for c in candidates if c["name"] == MISSAO_CANDIDATO), None)
+        if rc:
+            val   = rc["valor"]
+            apoio = parse_apoiadores(rc.get("apoio", "0"))
+
+            key = "renan_arrecad"
+            last_m = milestones.get(key, 0)
+            next_m = next((m for m in MARCOS_ARRECADACAO_CANDIDATO if m > last_m and val >= m), None)
+            if next_m:
+                text = build_marco_arrecad(MISSAO_CANDIDATO, val, next_m, "candidato")
+                tid  = post_tweet(text)
+                if tid:
+                    milestones[key] = next_m
+                    save_milestones(milestones)
+                    register_alert(text)
+                    log.info("Marco arrecadacao Renan: %s", fmt_marco(next_m))
+                    posted = True
+
+            if not posted and apoio > 0:
+                key2   = "renan_apoio"
+                last_a = milestones.get(key2, 0)
+                next_a = next((m for m in MARCOS_APOIADORES_CANDIDATO if m > last_a and apoio >= m), None)
+                if next_a:
+                    text = build_marco_apoio(MISSAO_CANDIDATO, apoio, next_a, "candidato")
+                    tid  = post_tweet(text)
+                    if tid:
+                        milestones[key2] = next_a
+                        save_milestones(milestones)
+                        register_alert(text)
+                        log.info("Marco apoiadores Renan: %d", next_a)
+                        posted = True
+
+    # ── Ultrapassagens partidos ─────────────────────────────────
+    if parties and not posted:
+        new_r = {p["name"]: {"pos": i+1, "val": p["valor"]} for i, p in enumerate(parties)}
+        old_r = load_qa_ranking().get("parties", {})
+        if old_r:
+            for name, info in new_r.items():
+                old_info = old_r.get(name)
+                if old_info and info["pos"] < old_info["pos"]:
+                    loser = next(
+                        (n for n, oi in old_r.items()
+                         if oi["pos"] == info["pos"] and new_r.get(n, {}).get("pos", 99) > info["pos"]),
+                        None
+                    )
+                    if loser and loser in new_r:
+                        text = build_overtake(name, loser, info["val"], new_r[loser]["val"],
+                                              info["pos"], new_r[loser]["pos"], "partido")
+                        tid = post_tweet(text)
+                        if tid:
+                            register_alert(text)
+                            log.info("Ultrapassagem partidos: %s > %s", name, loser)
+                            posted = True
+                            break
+        save_qa_ranking({**load_qa_ranking(), "parties": new_r})
+
+    # ── Ultrapassagens candidatos ───────────────────────────────
+    if candidates and not posted:
+        new_r = {c["name"]: {"pos": i+1, "val": c["valor"]} for i, c in enumerate(candidates)}
+        old_r = load_qa_ranking().get("candidates", {})
+        if old_r:
+            for name, info in new_r.items():
+                old_info = old_r.get(name)
+                if old_info and info["pos"] < old_info["pos"]:
+                    loser = next(
+                        (n for n, oi in old_r.items()
+                         if oi["pos"] == info["pos"] and new_r.get(n, {}).get("pos", 99) > info["pos"]),
+                        None
+                    )
+                    if loser and loser in new_r:
+                        text = build_overtake(name, loser, info["val"], new_r[loser]["val"],
+                                              info["pos"], new_r[loser]["pos"], "candidato")
+                        tid = post_tweet(text)
+                        if tid:
+                            register_alert(text)
+                            log.info("Ultrapassagem candidatos: %s > %s", name, loser)
+                            posted = True
+                            break
+        save_qa_ranking({**load_qa_ranking(), "candidates": new_r})
+
+
+def check_repost_queue():
+    now = datetime.now(BRAZIL_TZ)
+    if now.hour != 8 or now.minute >= 10:
+        return
+    queue   = load_repost_queue()
+    pending = [q for q in queue if not q.get("reposted")]
+    if not pending:
+        return
+    for item in pending:
+        if can_post_alert():
+            text = build_repost(item["text"])
+            tid  = post_tweet(text)
+            if tid:
+                item["reposted"] = True
+                register_alert(text)
+                log.info("Repost matinal realizado.")
+            break
+    save_repost_queue(queue)
+
+
 def run_scheduler():
     log.info("Bot iniciado — posts QueroApoiar: alternado 18h | dias pares=partidos, dias impares=candidatos")
     qa_done = {"post": None}
@@ -463,6 +773,10 @@ def run_scheduler():
                     log.info("Dia impar — postando candidatos")
                     run_qa_candidates_post()
                 qa_done["post"] = today
+
+        # Verifica marcos e ultrapassagens a cada ciclo
+        check_repost_queue()
+        check_marcos_and_overtakes()
 
         time.sleep(300)
 

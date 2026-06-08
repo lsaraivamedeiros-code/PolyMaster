@@ -864,8 +864,81 @@ def check_repost_queue():
 # SCHEDULER
 # ─────────────────────────────────────────────
 
+
+def bootstrap_milestones():
+    """
+    Na inicialização, preenche milestones.json com os valores atuais
+    sem postar — evita posts de marcos já ultrapassados após reinício.
+    """
+    ms = load_milestones()
+    changed = False
+
+    parties    = scrape_parties()
+    candidates = scrape_candidates()
+
+    if parties:
+        mp = next((p for p in parties if p["name"] == MISSAO_PARTIDO), None)
+        if mp:
+            val   = mp["valor"]
+            apoio = mp.get("apoio", 0)
+
+            # Arrecadação: marca o maior marco já ultrapassado
+            key = "missao_p_arrecad"
+            current_mark = ms.get(key, 0)
+            highest = max((m for m in MARCOS_ARRECAD_PARTIDO if val >= m), default=0)
+            if highest > current_mark:
+                ms[key] = highest
+                ms["missao_p_val"] = val
+                log.info("Bootstrap marco partido arrecad: %s", fmt_marco(highest))
+                changed = True
+
+            # Apoiadores
+            if apoio:
+                key2 = "missao_p_apoio"
+                current_apoio = ms.get(key2, 0)
+                highest_a = max((m for m in MARCOS_APOIO_PARTIDO if apoio >= m), default=0)
+                if highest_a > current_apoio:
+                    ms[key2] = highest_a
+                    ms["missao_p_apoio_val"] = apoio
+                    log.info("Bootstrap marco partido apoio: %d", highest_a)
+                    changed = True
+
+    if candidates:
+        rc = next((c for c in candidates if c["name"] == MISSAO_CANDIDATO), None)
+        if rc:
+            val   = rc["valor"]
+            apoio = rc.get("apoio", 0)
+
+            key = "renan_arrecad"
+            current_mark = ms.get(key, 0)
+            highest = max((m for m in MARCOS_ARRECAD_CAND if val >= m), default=0)
+            if highest > current_mark:
+                ms[key] = highest
+                ms["renan_val"] = val
+                log.info("Bootstrap marco candidato arrecad: %s", fmt_marco(highest))
+                changed = True
+
+            if apoio:
+                key2 = "renan_apoio"
+                current_apoio = ms.get(key2, 0)
+                highest_a = max((m for m in MARCOS_APOIO_CAND if apoio >= m), default=0)
+                if highest_a > current_apoio:
+                    ms[key2] = highest_a
+                    ms["renan_apoio_val"] = apoio
+                    log.info("Bootstrap marco candidato apoio: %d", highest_a)
+                    changed = True
+
+    if changed:
+        save_milestones(ms)
+        log.info("Bootstrap de marcos concluído.")
+    else:
+        log.info("Bootstrap: marcos já atualizados.")
+
 def run_scheduler():
     log.info("Bot iniciado — post diario 18h alternado | alertas a qualquer hora")
+
+    # Preenche marcos já ultrapassados sem postar (evita spam após reinício)
+    bootstrap_milestones()
 
     while True:
         now   = datetime.now(BRAZIL_TZ)

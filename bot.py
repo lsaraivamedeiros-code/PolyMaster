@@ -259,10 +259,13 @@ def build_poly_single(c):
     name = c["candidate"]; prob = c["probability"]
     color = "#E6A817" if name==RENAN_NAME else ("#4C9BE8" if name==FLAVIO_NAME else "#5B9BD5")
     p_min=min(prices); p_max=max(prices)
-    margin = max((p_max-p_min)*0.15, 1.5)
+    margin = max((p_max-p_min)*0.35, 4.0)
     y_min=max(0,p_min-margin); y_max=p_max+margin
-    delta_total = round(prices[-1]-prices[0],1)
-    delta_str = f"▲{delta_total:.1f}%" if delta_total>=0 else f"▼{abs(delta_total):.1f}%"
+    # Variação dos últimos 30 dias (mais relevante que desde o início da série)
+    cutoff_30d = datetime.now(BRAZIL_TZ) - timedelta(days=30)
+    idx_30d = next((i for i, d in enumerate(dates) if d >= cutoff_30d), 0)
+    delta_total = round(prices[-1]-prices[idx_30d],1)
+    delta_str = f"▲{delta_total:.1f}% (30d)" if delta_total>=0 else f"▼{abs(delta_total):.1f}% (30d)"
     fig, ax = plt.subplots(figsize=(10,10))
     fig.patch.set_facecolor("#0D1117"); ax.set_facecolor("#0D1117")
     ax.plot(dates, prices, color=color, linewidth=2.2, solid_capstyle="round")
@@ -280,7 +283,7 @@ def build_poly_single(c):
     for spine in ax.spines.values(): spine.set_visible(False)
     fig.text(0.04, 0.93, sname(name), color="white", fontsize=13, fontweight="bold", transform=fig.transFigure)
     fig.text(0.04, 0.86, f"{prob:.0f}% chance", color=color, fontsize=12, fontweight="bold", transform=fig.transFigure)
-    fig.text(0.22, 0.86, delta_str, color=color, fontsize=11, transform=fig.transFigure)
+    fig.text(0.27, 0.86, delta_str, color=color, fontsize=11, transform=fig.transFigure)
     fig.text(0.99, 0.01, f"Polymarket • {datetime.now(BRAZIL_TZ).strftime('%d/%m/%Y %H:%M')}",
              ha="right", va="bottom", color="#333", fontsize=7, transform=fig.transFigure)
     plt.subplots_adjust(right=0.88, top=0.80, left=0.04, bottom=0.08)
@@ -568,6 +571,15 @@ def check_poly_alerts():
         log.info("Limite diário de posts atingido.")
         return
 
+    # Lock anti-duplicação: não roda novamente se já rodou há menos de 4 min
+    lock = load_json(DATA_DIR / "poly_alert_lock.json") or {}
+    if lock.get("timestamp"):
+        elapsed = (datetime.now(BRAZIL_TZ) - datetime.fromisoformat(lock["timestamp"])).total_seconds()
+        if elapsed < 240:
+            log.info("Lock ativo — última verificação há %.0fs. Pulando ciclo.", elapsed)
+            return
+    save_json(DATA_DIR / "poly_alert_lock.json", {"timestamp": datetime.now(BRAZIL_TZ).isoformat()})
+
     cands = fetch_poly_data()
     if not cands: return
 
@@ -603,6 +615,37 @@ def check_poly_alerts():
 
     if not can_post_daily(): return
 
+    # ── Trava de intervalo mínimo de 4h entre posts ──────────────
+    # Só é ignorada se: (a) houve mudança na ordem do top 3, ou
+    # (b) algum candidato variou mais de 2.5pp desde o último post.
+    MIN_INTERVAL_SECS = 4 * 3600
+    can_bypass_interval = False
+
+    old_top3 = last_rank.get("ranking", [])[:3] if last_rank.get("ranking") else []
+    new_top3 = new_rank[:3]
+    if old_top3 and new_top3 != old_top3:
+        can_bypass_interval = True
+        log.info("Top 3 mudou de ordem — bypass da trava de 4h.")
+
+    if not can_bypass_interval:
+        for c in cands[:5]:
+            prev = last_map.get(c["candidate"])
+            if prev is not None and abs(c["probability"] - prev) >= 2.5:
+                can_bypass_interval = True
+                log.info("Variação >2.5pp detectada (%s) — bypass da trava de 4h.", c["candidate"])
+                break
+
+    if not can_bypass_interval:
+        last_ts = last_post.get("timestamp")
+        if last_ts:
+            elapsed = (datetime.now(BRAZIL_TZ) - datetime.fromisoformat(last_ts)).total_seconds()
+            if elapsed < MIN_INTERVAL_SECS:
+                log.info("Trava de 4h ativa — faltam %.0f min para liberar.", (MIN_INTERVAL_SECS-elapsed)/60)
+                return
+
+    # Histórico de direção do último alerta por candidato (evita ida-e-volta)
+    move_history = load_json(DATA_DIR / "poly_move_history.json") or {}
+
     # Alertas de variação
     for c in cands[:5]:
         name = c["candidate"]; prob = c["probability"]
@@ -612,6 +655,18 @@ def check_poly_alerts():
         if abs(delta_last) < ALERT_THRESHOLD: continue
         if name==RENAN_NAME and delta_last<0:
             log.info("Queda do Renan ignorada."); continue
+
+        # Trava anti-recuo: se o último alerta postado para este candidato foi
+        # numa direção, e agora ele simplesmente recua de volta (mesma magnitude
+        # aproximada, direção oposta), não posta — evita ida-e-volta.
+        last_move = move_history.get(name)
+        if last_move:
+            last_delta = last_move.get("delta", 0)
+            # Direção oposta E dentro de uma margem de 0.3pp do valor anterior
+            if (last_delta > 0 and delta_last < 0) or (last_delta < 0 and delta_last > 0):
+                if abs(abs(delta_last) - abs(last_delta)) <= 0.3:
+                    log.info("Recuo imediato de %s ignorado (delta=%.1f, last=%.1f).", name, delta_last, last_delta)
+                    continue
 
         big_move = abs(delta_last) >= BIG_MOVE_THRESHOLD
         if not can_post_daily(big_move=big_move): continue
@@ -623,6 +678,8 @@ def check_poly_alerts():
         if tid:
             save_json(POLY_LAST_POST_FILE, {"tweet_id":tid,"timestamp":datetime.now(BRAZIL_TZ).isoformat(),"candidates":cands})
             increment_daily_count()
+            move_history[name] = {"delta": delta_last, "timestamp": datetime.now(BRAZIL_TZ).isoformat()}
+            save_json(DATA_DIR / "poly_move_history.json", move_history)
         break
 
 
